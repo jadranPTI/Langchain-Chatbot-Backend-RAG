@@ -1,0 +1,22 @@
+# langchain
+# langchain-core
+# langchain-community
+# pypdf
+# pymupdf
+# sentence-transformers
+# faiss-cpu
+# chromadb
+# langchain-groq
+# python-dotenv
+
+
+langchain>=0.2.0
+langchain-core>=0.2.0
+langchain-community>=0.2.0
+langchain-groq>=0.1.0
+pypdf
+pymupdf
+sentence-transformers
+faiss-cpu
+chromadb
+python-dotenv

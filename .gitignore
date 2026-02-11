@@ -1,0 +1,120 @@
+# ==============================
+# 🔹 Python
+# ==============================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+*.dll
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+pip-wheel-metadata/
+
+# Byte-compiled / optimized files
+*.pyc
+*.pyo
+*.pdb
+
+# ==============================
+# 🔹 Virtual Environment
+# ==============================
+venv/
+env/
+ENV/
+.venv/
+.env/
+
+# ==============================
+# 🔹 Environment Variables
+# ==============================
+.env
+.env.*
+*.env
+
+# ==============================
+# 🔹 Jupyter Notebook
+# ==============================
+.ipynb_checkpoints/
+
+# ==============================
+# 🔹 VS Code
+# ==============================
+.vscode/
+.history/
+
+# ==============================
+# 🔹 Logs
+# ==============================
+*.log
+logs/
+log/
+
+# ==============================
+# 🔹 Database Files
+# ==============================
+*.sqlite3
+*.db
+*.sqlite
+
+# ==============================
+# 🔹 Vector Stores (FAISS / Chroma)
+# ==============================
+faiss_store/
+vector_store/
+*.faiss
+*.index
+*.pkl
+chroma.sqlite3
+chroma/
+
+
+# Large Files (65MB PDF fix)
+data/pdf/
+
+# ==============================
+# 🔹 OS Files
+# ==============================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ==============================
+# 🔹 Temporary Files
+# ==============================
+*.tmp
+*.temp
+*.bak
+*.swp
+
+# ==============================
+# 🔹 Cache
+# ==============================
+.cache/
+pytest_cache/
+.mypy_cache/
+.pytest_cache/
+
+# ==============================
+# 🔹 Coverage Reports
+# ==============================
+.coverage
+htmlcov/
+
+# ==============================
+# 🔹 API Keys / Secrets
+# ==============================
+secrets.json
+config.json
+*.pem
+*.key
+
+# ==============================
+# 🔹 Node (if frontend included)
+# ==============================
+node_modules/
+package-lock.json
+yarn.lock
