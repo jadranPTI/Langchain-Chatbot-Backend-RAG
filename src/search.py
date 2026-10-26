@@ -12,7 +12,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 load_dotenv()
 
 class RAGSearch:
-    def __init__(self, persist_dir: str = "faiss_store", embedding_model: str = 'all-MiniLM-L6-v2', llm_model="openai/gpt-oss-20b"):
+    def __init__(self, persist_dir: str = "faiss_store", embedding_model: str = 'all-MiniLM-L6-v2', llm_model: str = "openai/gpt-oss-20b", temperature: float = 0.0):
         
 
         self.vectorstore = FaissVectorStore(persist_dir, embedding_model)
@@ -42,38 +42,37 @@ class RAGSearch:
         if not groq_api_key:
             raise ValueError("GROQ_API_KEY missing in .env file")
 
-        self.llm = ChatGroq(groq_api_key=groq_api_key, model_name=llm_model)
-        print(f"[INFO] Groq LLM initialized: {llm_model}")
+        self.llm = ChatGroq(
+            groq_api_key=groq_api_key,
+            model_name=llm_model,
+            temperature=0.0
+        )
+        print(f"[INFO] Groq LLM initialized: {llm_model} with temperature=0.0")
 
-
-        
         self.device_sessions = {}
 
-
-
-    def _get_contextualized_query(self, query, history):
-        """Pichli baaton ko dekh kar sawal ko mukammal karna (Custom Logic)"""
+    def _get_contextualized_query(self, query: str, history) -> str:
+        """Pichli baaton ko dekh kar sawal ko mukammal karna (Standalone Query)."""
         if not history:
             return query
 
-        
-        history_text = ""
-        for role, msg in history[-4:]:
-            history_text += f"{role}: {msg}\n"
-
+        history_text = "\n".join([f"{role}: {msg}" for role, msg in history[-4:]])
 
         context_prompt = (
-            f"Given the following chat history, reformulate the latest user question "
-            f"to be a standalone question. If it's already standalone, just return it.\n\n"
-            f"History:\n{history_text}\n"
-            f"Latest Question: {query}\n"
-            f"Standalone Question:"
+            "Given the following chat history and a follow-up question, rephrase the follow-up "
+            "into a concise standalone search query. Return ONLY the standalone query text without any "
+            "introductory words, preamble, explanations, or quotes. If the question is already standalone, return it as-is.\n\n"
+            f"Chat History:\n{history_text}\n\n"
+            f"Follow-up Question: {query}\n\n"
+            "Standalone Query:"
         )
-        
-        response = self.llm.invoke([HumanMessage(content=context_prompt)])
-        return response.content
 
-  
+        response = self.llm.invoke([HumanMessage(content=context_prompt)])
+        reformulated = response.content.strip()
+        if reformulated.startswith('"') and reformulated.endswith('"'):
+            reformulated = reformulated[1:-1].strip()
+        return reformulated if reformulated else query
+
     def search_and_stream(self, query: str, device_id: str):
         try:
             if device_id not in self.device_sessions:
@@ -81,44 +80,53 @@ class RAGSearch:
 
             history = self.device_sessions[device_id]
 
-            if not history:
-                check_prompt = (
-                    "You are a query validator. A user is starting a NEW conversation. "
-                    f"User says: '{query}'\n"
-                    "Is this question complete enough to answer without any previous context? "
-                    "If it's too vague (like 'types?', 'explain more', 'benefits'), reply with 'VAGUE'. "
-                    "If it's a clear question, reply with 'CLEAR'."
-                )
-                validation = self.llm.invoke([HumanMessage(content=check_prompt)]).content
-
-                if "VAGUE" in validation.upper():
-                    msg = "I'd love to help, but since we just started, I'm not sure what you're referring to. Could you please specify the topic?"
-                    yield msg
+            # Quick validation for greetings or trivial single-word fragments
+            if not history and len(query.strip().split()) <= 2:
+                lower_q = query.strip().lower().rstrip("?!.,")
+                if lower_q in ["hi", "hello", "hey", "salam", "assalam o alaikum", "greetings"]:
+                    yield "Hello! How can I help you today? You can ask me any question about the documents in the knowledge base."
+                    return
+                elif lower_q in ["why", "explain", "more", "types", "details", "help"]:
+                    yield "Could you please specify which topic or concept you would like to know about?"
                     return
 
             smart_query = self._get_contextualized_query(query, history)
 
             results = self.vectorstore.query(smart_query, top_k=10)
-            context = "\n\n".join([r["metadata"].get("text", "") for r in results if r["metadata"]])
+
+            context_blocks = []
+            for r in results:
+                meta = r.get("metadata") or {}
+                txt = meta.get("text", "").strip()
+                if not txt:
+                    continue
+                file_name = meta.get("file_name", "Document")
+                page = meta.get("page")
+                page_str = f", Page {page + 1}" if page is not None and isinstance(page, int) else ""
+                header = f"[{file_name}{page_str}]"
+                context_blocks.append(f"--- Source Excerpt {header} ---\n{txt}")
+
+            context = "\n\n".join(context_blocks)
 
             if not context.strip():
-                msg = "Sorry, I don't have knowledge about it."
+                msg = "I'm sorry, I don't have information on that yet."
                 yield msg
                 return
 
             system_instruction = (
-                "You are a highly intelligent and friendly AI assistant."
-                "Your goal is to explain concepts in a natural, conversational way. "
-                "\n\nSTRICT RULES:\n"
-                "1. Do NOT mention page numbers, chapter numbers, figure titles, or 'provided context'.\n"
-                "2. Do NOT say 'According to the text' or 'The book says'.\n"
-                "3. Speak as if this knowledge is your own expertise.\n"
-                "4. If you don't know the answer based on the context, just say: 'I'm sorry, I don't have information on that yet.'\n"
-                "5. Keep the tone helpful and professional.\n"
-                "6. Only answer based on the knowledge found in the context. \n"
-                "7. If the user asks about your identity or what you can do, explain what topics are available in your documents (the context).\n"
-                f"\n\nContext for your knowledge: {context}"
-                f"\n\nUser's Question: {query}"
+                "You are an accurate, highly knowledgeable RAG assistant.\n\n"
+                "STRICT INSTRUCTIONS:\n"
+                "1. Base your answer strictly and faithfully on the provided context excerpts below.\n"
+                "2. Do NOT invent facts, alter events, or fabricate scenes (e.g., do not invent lawsuits, fake escapes, or wrong vessels).\n"
+                "3. If a specific detail (such as a name, count, or salary) is NOT mentioned or established in the text, explicitly state that the text does not provide or name it. Do NOT fabricate details or confuse different entities.\n"
+                "4. Answer as much of the user's question as is supported by the context. If part of the question is covered and part is unmentioned, address both clearly.\n"
+                "5. When presenting factual details from the context, include the relevant document name and page number as citations.\n"
+                "6. For analytical questions (e.g. symbolism, framing narrative), provide insightful, balanced analysis grounded strictly in the text's actual events.\n"
+                "7. If the question cannot be answered at all from the context, reply: 'I'm sorry, I don't have information on that yet.'\n"
+                "8. Keep the tone professional, clear, and articulate.\n\n"
+                f"CONTEXT EXCERPTS:\n{context}\n\n"
+                f"USER QUESTION: {query}\n\n"
+                "ANSWER:"
             )
 
             full_answer = []

@@ -61,7 +61,18 @@ class FaissVectorStore:
         emb_pipe = EmbeddingPipeline(model_name=self.embedding_model, chunk_size=self.chunk_size, chunk_overlap=self.chunk_overlap)
         chunks = emb_pipe.chunk_documents(documents)
         embeddings = emb_pipe.embed_chunks(chunks)
-        metadatas = [{"text": chunk.page_content} for chunk in chunks]
+        
+        metadatas = []
+        for chunk in chunks:
+            chunk_meta = dict(chunk.metadata) if hasattr(chunk, "metadata") and chunk.metadata else {}
+            item_meta = {
+                "text": chunk.page_content,
+                "source": chunk_meta.get("source", "Unknown"),
+                "page": chunk_meta.get("page", None),
+                "file_name": Path(chunk_meta.get("source", "")).name if chunk_meta.get("source") else "Document"
+            }
+            metadatas.append(item_meta)
+
         self.add_embeddings(np.array(embeddings).astype('float32'), metadatas)
         self.save(data_dir)
         print(f"[INFO] Vector store built and saved to {self.persist_dir}")
@@ -99,17 +110,17 @@ class FaissVectorStore:
             print(f"[INFO] Loaded Faiss index and metadata from {self.persist_dir}")
 
 
-    def search(self, query_embedding: np.ndarray, top_k: int = 10, threshold: float = 1.5):
+    def search(self, query_embedding: np.ndarray, top_k: int = 10, threshold: float = 1.8):
         D, I = self.index.search(query_embedding, top_k)
         results = []
         for idx, dist in zip(I[0], D[0]):
-            if idx != -1 and dist < threshold:
+            if idx != -1 and (threshold is None or dist < threshold):
                 meta = self.metadata[idx] if idx < len(self.metadata) else None
                 results.append({"index": int(idx), "distance": float(dist), "metadata": meta})
         return results
     
 
-    def query(self, query_text: str, top_k: int = 10, threshold: float = 1.5):
+    def query(self, query_text: str, top_k: int = 10, threshold: float = 1.8):
         print(f"[INFO] Querying vector store for: '{query_text}'")
         query_emb = self.model.encode([query_text]).astype('float32')
         return self.search(query_emb, top_k=top_k, threshold=threshold)

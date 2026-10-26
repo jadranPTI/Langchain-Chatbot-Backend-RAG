@@ -21,10 +21,10 @@ class EmbeddingPipeline:
             chunk_size=self.chunk_size,
             chunk_overlap=self.chunk_overlap,
             length_function=len,
-            separators=["\n\n", "\n", "", " "]
+            separators=["\n\n", "\n", " ", ""]
         )
         chunks = splitter.split_documents(documents)
-        print(f"[INFO] Split{len(documents)} documents into {len(chunks)} chunks")
+        print(f"[INFO] Split {len(documents)} documents into {len(chunks)} chunks")
         return chunks
     
 
