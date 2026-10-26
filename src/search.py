@@ -3,6 +3,7 @@ import logging
 from dotenv import load_dotenv
 from src.vectorstore import FaissVectorStore
 from langchain_groq import ChatGroq
+from src.data_loader import load_all_documents
 
 from langchain_core.messages import HumanMessage, AIMessage
 
@@ -11,20 +12,31 @@ from langchain_core.messages import HumanMessage, AIMessage
 load_dotenv()
 
 class RAGSearch:
-    def __init__(self, persist_dir: str = "faiss_store", embedding_model: str = 'all-MiniLM-L6-v2', llm_model="llama-3.1-8b-instant"):
+    def __init__(self, persist_dir: str = "faiss_store", embedding_model: str = 'all-MiniLM-L6-v2', llm_model="openai/gpt-oss-20b"):
         
 
         self.vectorstore = FaissVectorStore(persist_dir, embedding_model)
+        data_dir = "data"
         faiss_path = os.path.join(persist_dir, "faiss.index")
         meta_path = os.path.join(persist_dir, "metadata.pkl")
 
-        if not (os.path.exists(faiss_path) and os.path.exists(meta_path)):
-            from src.data_loader import load_all_documents
-            docs = load_all_documents("data")
-            self.vectorstore.build_from_documents(docs)
+        store_exists = os.path.exists(faiss_path) and os.path.exists(meta_path)
+        source_data_is_current = (
+            store_exists and self.vectorstore.has_current_source_data(data_dir)
+        )
+
+        if source_data_is_current:
+            print("[INFO] Source data unchanged. Loading existing vector store.")
+            self.vectorstore.load()
 
         else:
-            self.vectorstore.load()
+            if store_exists:
+                print("[INFO] Source data changed. Rebuilding vector store.")
+            else:
+                print("[INFO] Vector store not found. Building vector store.")
+
+            docs = load_all_documents(data_dir)
+            self.vectorstore.build_from_documents(docs, data_dir)
 
         groq_api_key = os.getenv("GROQ_API_KEY")
         if not groq_api_key:
@@ -62,66 +74,70 @@ class RAGSearch:
         return response.content
 
   
-    def search_and_summarize(self, query: str, device_id: str) -> str:
-        
-        if device_id not in self.device_sessions:
-            self.device_sessions[device_id] = []
+    def search_and_stream(self, query: str, device_id: str):
+        try:
+            if device_id not in self.device_sessions:
+                self.device_sessions[device_id] = []
 
-        history = self.device_sessions[device_id]
+            history = self.device_sessions[device_id]
 
-        if not history:
-        
-            check_prompt = (
-                "You are a query validator. A user is starting a NEW conversation. "
-                f"User says: '{query}'\n"
-                "Is this question complete enough to answer without any previous context? "
-                "If it's too vague (like 'types?', 'explain more', 'benefits'), reply with 'VAGUE'. "
-                "If it's a clear question, reply with 'CLEAR'."
+            if not history:
+                check_prompt = (
+                    "You are a query validator. A user is starting a NEW conversation. "
+                    f"User says: '{query}'\n"
+                    "Is this question complete enough to answer without any previous context? "
+                    "If it's too vague (like 'types?', 'explain more', 'benefits'), reply with 'VAGUE'. "
+                    "If it's a clear question, reply with 'CLEAR'."
+                )
+                validation = self.llm.invoke([HumanMessage(content=check_prompt)]).content
+
+                if "VAGUE" in validation.upper():
+                    msg = "I'd love to help, but since we just started, I'm not sure what you're referring to. Could you please specify the topic?"
+                    yield msg
+                    return
+
+            smart_query = self._get_contextualized_query(query, history)
+
+            results = self.vectorstore.query(smart_query, top_k=10)
+            context = "\n\n".join([r["metadata"].get("text", "") for r in results if r["metadata"]])
+
+            if not context.strip():
+                msg = "Sorry, I don't have knowledge about it."
+                yield msg
+                return
+
+            system_instruction = (
+                "You are a highly intelligent and friendly AI assistant."
+                "Your goal is to explain concepts in a natural, conversational way. "
+                "\n\nSTRICT RULES:\n"
+                "1. Do NOT mention page numbers, chapter numbers, figure titles, or 'provided context'.\n"
+                "2. Do NOT say 'According to the text' or 'The book says'.\n"
+                "3. Speak as if this knowledge is your own expertise.\n"
+                "4. If you don't know the answer based on the context, just say: 'I'm sorry, I don't have information on that yet.'\n"
+                "5. Keep the tone helpful and professional.\n"
+                "6. Only answer based on the knowledge found in the context. \n"
+                "7. If the user asks about your identity or what you can do, explain what topics are available in your documents (the context).\n"
+                f"\n\nContext for your knowledge: {context}"
+                f"\n\nUser's Question: {query}"
             )
-            validation = self.llm.invoke([HumanMessage(content=check_prompt)]).content
-        
-            if "VAGUE" in validation.upper():
-                return "I'd love to help, but since we just started, I'm not sure what you're referring to. Could you please specify the topic?"
 
-        
-        smart_query = self._get_contextualized_query(query, history)
+            full_answer = []
+            for chunk in self.llm.stream([HumanMessage(content=system_instruction)]):
+                content = chunk.content
+                if content:
+                    full_answer.append(content)
+                    yield content
 
-        
-        results = self.vectorstore.query(smart_query, top_k=10)
-        context = "\n\n".join([r["metadata"].get("text", "") for r in results if r["metadata"]])
+            complete_answer = "".join(full_answer)
+            self.device_sessions[device_id].append(("User", query))
+            self.device_sessions[device_id].append(("Assistant", complete_answer))
 
-        if not context.strip():
-            return "Sorry, I don't have knowledge about it."
+            if len(self.device_sessions[device_id]) > 50:
+                self.device_sessions[device_id] = self.device_sessions[device_id][-50:]
+        except Exception as e:
+            yield f"\n[Error during generation: {str(e)}]"
 
-        
-        system_instruction = (
-            # "You are a helpful assistant. Answer the user's question efficiently "
-            # f"\n\nContext: {context}\n\nQuestion: {query}"
-            "You are a highly intelligent and friendly AI assistant."
-            "Your goal is to explain concepts in a natural, conversational way. "
-            "\n\nSTRICT RULES:\n"
-            "1. Do NOT mention page numbers, chapter numbers, figure titles, or 'provided context'.\n"
-            "2. Do NOT say 'According to the text' or 'The book says'.\n"
-            "3. Speak as if this knowledge is your own expertise.\n"
-            "4. If you don't know the answer based on the context, just say: 'I'm sorry, I don't have information on that yet.'\n"
-            "5. Keep the tone helpful and professional.\n"
-            "6. Only answer based on the knowledge found in the context. \n"
-            "7. If the user asks about your identity or what you can do, explain what topics are available in your documents (the context).\n"
-            f"\n\nContext for your knowledge: {context}"
-            f"\n\nUser's Question: {query}"
-        )
-        
-        response = self.llm.invoke([HumanMessage(content=system_instruction)])
-        answer = response.content
-
-        
-        self.device_sessions[device_id].append(("User", query))
-        self.device_sessions[device_id].append(("Assistant", answer))
-
-       
-        if len(self.device_sessions[device_id]) > 50:
-            self.device_sessions[device_id] = self.device_sessions[device_id][-50:]
-
-        return answer
+    def search_and_summarize(self, query: str, device_id: str) -> str:
+        return "".join(list(self.search_and_stream(query, device_id)))
    
         

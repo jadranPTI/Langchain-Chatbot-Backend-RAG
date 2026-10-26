@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from src.search import RAGSearch
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,22 +28,17 @@ except Exception as e:
 class QueryRequest(BaseModel):
     query: str
     device_id: str
-    # threshold: float = 1.5
 
 
 @app.post("/chat")
-async def ask_bot(request: QueryRequest):
+def ask_bot(request: QueryRequest):
     if not request.query:
         raise HTTPException(status_code=400, detail="Query cannot be empty")
     
     try:
-        response = bot.search_and_summarize(request.query, request.device_id)
-
-        return {
-            "status": "success",
-            "device_id": request.device_id,
-            "query": request.query,
-            "response": response
-        }
+        return StreamingResponse(
+            bot.search_and_stream(request.query, request.device_id),
+            media_type="text/plain"
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

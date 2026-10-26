@@ -4,6 +4,8 @@ import os
 import faiss
 import numpy as np
 import pickle
+import json
+from pathlib import Path
 from typing import List, Any
 from sentence_transformers import SentenceTransformer
 from src.embedding import EmbeddingPipeline
@@ -21,16 +23,47 @@ class FaissVectorStore:
         self.chunk_overlap = chunk_overlap
         print(f" [INFO] Loaded embedding model: {embedding_model}")
 
+    @staticmethod
+    def source_manifest(data_dir: str) -> list[dict[str, int | str]]:
+        data_path = Path(data_dir).resolve()
+        supported_extensions = {".pdf", ".txt", ".csv", ".docx", ".doc"}
+        files = sorted(
+            file_path
+            for file_path in data_path.glob("**/*")
+            if file_path.is_file() and file_path.suffix.lower() in supported_extensions
+        )
+        return [
+            {
+                "path": str(file_path.relative_to(data_path)),
+                "size": file_path.stat().st_size,
+                "modified_ns": file_path.stat().st_mtime_ns,
+            }
+            for file_path in files
+        ]
+
+    def has_current_source_data(self, data_dir: str) -> bool:
+        manifest_path = os.path.join(self.persist_dir, "source_manifest.json")
+        if not os.path.exists(manifest_path):
+            return False
+
+        with open(manifest_path, "r", encoding="utf-8") as file:
+            stored_manifest = json.load(file)
+
+        return stored_manifest == self.source_manifest(data_dir)
 
 
-    def build_from_documents(self, documents: List[Any]):
+
+    def build_from_documents(self, documents: List[Any], data_dir: str):
         print(f"[INFO] Building vector store from {len(documents)} raw documents...")
+        if not documents:
+            raise ValueError(f"No supported documents found in {Path(data_dir).resolve()}")
+
         emb_pipe = EmbeddingPipeline(model_name=self.embedding_model, chunk_size=self.chunk_size, chunk_overlap=self.chunk_overlap)
         chunks = emb_pipe.chunk_documents(documents)
         embeddings = emb_pipe.embed_chunks(chunks)
         metadatas = [{"text": chunk.page_content} for chunk in chunks]
         self.add_embeddings(np.array(embeddings).astype('float32'), metadatas)
-        self.save()
+        self.save(data_dir)
         print(f"[INFO] Vector store built and saved to {self.persist_dir}")
 
 
@@ -44,12 +77,15 @@ class FaissVectorStore:
         print(f"[INFO] Added {embeddings.shape[0]} vectors to Faiss index.")
 
 
-    def save(self):
+    def save(self, data_dir: str):
         faiss_path = os.path.join(self.persist_dir, "faiss.index")
         meta_path = os.path.join(self.persist_dir, "metadata.pkl")
+        manifest_path = os.path.join(self.persist_dir, "source_manifest.json")
         faiss.write_index(self.index, faiss_path)
         with open(meta_path, "wb") as f:
             pickle.dump(self.metadata, f)
+        with open(manifest_path, "w", encoding="utf-8") as file:
+            json.dump(self.source_manifest(data_dir), file, indent=2)
         print(f"[INFO] Saved Faiss index and metadata to {self.persist_dir}")
 
 
